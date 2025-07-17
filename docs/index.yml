@@ -1,0 +1,21 @@
+---
+documentation:
+  readme:
+    file: README.md
+    description: Main README with installation and quick start guide
+  api:
+    file: docs/API.md
+    description: Comprehensive API reference
+  security:
+    file: docs/SECURITY.md
+    description: Security features and best practices
+  examples:
+    file: docs/EXAMPLES.md
+    description: Practical examples and use cases
+  changelog:
+    file: CHANGELOG.md
+    description: Version history and changes
+metadata:
+  last_updated: '2025-07-17T22:31:10+05:30'
+  version: 1.0.0
+  ruby_version: ">= 3.1.0"

@@ -1,0 +1,186 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Documentation build script for JWT Phantom Auth gem
+# This script validates and builds documentation
+
+require 'fileutils'
+require 'yaml'
+
+class DocBuilder
+  def initialize
+    @docs_dir = File.join(__dir__, '..', 'docs')
+    @readme_file = File.join(__dir__, '..', 'README.md')
+    @changelog_file = File.join(__dir__, '..', 'CHANGELOG.md')
+  end
+
+  def build
+    puts "🔨 Building JWT Phantom Auth Documentation"
+    puts "=" * 50
+
+    validate_files
+    check_links
+    generate_doc_index
+    validate_markdown
+
+    puts "\n✅ Documentation build completed successfully!"
+    puts "\n📚 Available documentation:"
+    list_documentation
+  end
+
+  private
+
+  def validate_files
+    puts "\n📋 Validating documentation files..."
+
+    required_files = [
+      @readme_file,
+      @changelog_file,
+      File.join(@docs_dir, 'README.md'),
+      File.join(@docs_dir, 'API.md'),
+      File.join(@docs_dir, 'SECURITY.md'),
+      File.join(@docs_dir, 'EXAMPLES.md')
+    ]
+
+    required_files.each do |file|
+      if File.exist?(file)
+        puts "  ✅ #{File.basename(file)}"
+      else
+        puts "  ❌ #{File.basename(file)} - MISSING"
+        exit 1
+      end
+    end
+  end
+
+  def check_links
+    puts "\n🔗 Checking internal links..."
+
+    # Simple link validation - check if referenced files exist
+    files_to_check = [
+      @readme_file,
+      File.join(@docs_dir, 'README.md'),
+      File.join(@docs_dir, 'API.md'),
+      File.join(@docs_dir, 'SECURITY.md'),
+      File.join(@docs_dir, 'EXAMPLES.md')
+    ]
+
+    files_to_check.each do |file|
+      content = File.read(file)
+      links = content.scan(/\[([^\]]+)\]\(([^)]+)\)/)
+      
+      links.each do |link_text, link_url|
+        if link_url.start_with?('./') || link_url.start_with?('../')
+          # Convert relative links to absolute paths
+          if link_url.start_with?('./')
+            target_file = File.join(File.dirname(file), link_url[2..-1])
+          else
+            target_file = File.join(File.dirname(file), link_url[3..-1])
+          end
+          
+          unless File.exist?(target_file)
+            puts "  ⚠️  Broken link in #{File.basename(file)}: #{link_text} -> #{link_url}"
+          end
+        end
+      end
+    end
+  end
+
+  def generate_doc_index
+    puts "\n📝 Generating documentation index..."
+
+    # Create a simple documentation index
+    index_content = {
+      'documentation' => {
+        'readme' => {
+          'file' => 'README.md',
+          'description' => 'Main README with installation and quick start guide'
+        },
+        'api' => {
+          'file' => 'docs/API.md',
+          'description' => 'Comprehensive API reference'
+        },
+        'security' => {
+          'file' => 'docs/SECURITY.md',
+          'description' => 'Security features and best practices'
+        },
+        'examples' => {
+          'file' => 'docs/EXAMPLES.md',
+          'description' => 'Practical examples and use cases'
+        },
+        'changelog' => {
+          'file' => 'CHANGELOG.md',
+          'description' => 'Version history and changes'
+        }
+      },
+      'metadata' => {
+        'last_updated' => Time.now.iso8601,
+        'version' => '1.0.0',
+        'ruby_version' => '>= 3.1.0'
+      }
+    }
+
+    index_file = File.join(@docs_dir, 'index.yml')
+    File.write(index_file, index_content.to_yaml)
+    puts "  ✅ Generated #{index_file}"
+  end
+
+  def validate_markdown
+    puts "\n📄 Validating markdown syntax..."
+
+    # Basic markdown validation
+    files_to_validate = [
+      @readme_file,
+      File.join(@docs_dir, 'README.md'),
+      File.join(@docs_dir, 'API.md'),
+      File.join(@docs_dir, 'SECURITY.md'),
+      File.join(@docs_dir, 'EXAMPLES.md')
+    ]
+
+    files_to_validate.each do |file|
+      content = File.read(file)
+      
+      # Check for common markdown issues
+      issues = []
+      
+      # Check for unclosed code blocks
+      if content.scan(/```/).length.odd?
+        issues << "Unclosed code block"
+      end
+      
+      # Check for broken headers (missing space after #)
+      if content.match(/^#+[^#\s]/)
+        issues << "Header missing space after #"
+      end
+      
+      # Check for broken links
+      broken_links = content.scan(/\[([^\]]*)\]\(\)/)
+      if broken_links.any?
+        issues << "Empty links found"
+      end
+      
+      if issues.any?
+        puts "  ⚠️  #{File.basename(file)}: #{issues.join(', ')}"
+      else
+        puts "  ✅ #{File.basename(file)}"
+      end
+    end
+  end
+
+  def list_documentation
+    puts "\n📚 Documentation Structure:"
+    puts "├── README.md (Main documentation)"
+    puts "├── CHANGELOG.md (Version history)"
+    puts "└── docs/"
+    puts "    ├── README.md (Documentation index)"
+    puts "    ├── API.md (API reference)"
+    puts "    ├── SECURITY.md (Security guide)"
+    puts "    ├── EXAMPLES.md (Code examples)"
+    puts "    └── index.yml (Documentation metadata)"
+  end
+end
+
+# Run the documentation builder
+if __FILE__ == $0
+  builder = DocBuilder.new
+  builder.build
+end 
