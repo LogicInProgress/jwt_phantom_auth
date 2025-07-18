@@ -8,130 +8,131 @@ module JwtPhantomAuth
       @config = configuration
     end
 
-    # Authenticate user with email/username and password
-    def authenticate(identifier, password)
-      user = find_user_by_identifier(identifier)
+    # Authenticate a user with login identifier and password
+    def authenticate(login_identifier, password, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      raise ConfigurationError, "Model type '#{model_type}' not found" unless model_config
+
+      user = model_config.find_by_identifier(login_identifier)
       return nil unless user
-      return nil unless valid_password?(user, password)
-      
-      user
+
+      authenticate_password(password, user, model_config) ? user : nil
     end
 
     # Register a new user
-    def register(user_params, model_name = nil)
-      model_config = get_model_config(model_name)
-      user = model_config.model_class.new(user_params)
-      
-      # Hash password if present
-      if user.respond_to?(model_config.password_field) && user.send(model_config.password_field).present?
-        user.send("#{model_config.password_field}=", hash_password(user.send(model_config.password_field)))
+    def register(login_identifier, password, model_type, additional_attributes = {})
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      raise ConfigurationError, "Model type '#{model_type}' not found" unless model_config
+
+      # Check if user already exists
+      existing_user = model_config.find_by_identifier(login_identifier)
+      raise RegistrationError, "User with this login identifier already exists" if existing_user
+
+      # Create new user
+      user_attributes = {
+        model_config.login_field => login_identifier,
+        model_config.password_field => JwtPhantomAuth.utils.hash_password(password)
+      }.merge(additional_attributes)
+
+      # Set payload identifier if not provided
+      unless user_attributes[model_config.payload_identifier_field]
+        user_attributes[model_config.payload_identifier_field] = JwtPhantomAuth.utils.generate_uuid
       end
-      
-      user.save ? user : nil
+
+      user = model_config.model_class.create!(user_attributes)
+
+      user
+    rescue ActiveRecord::RecordInvalid => e
+      raise RegistrationError, "Validation failed: #{e.message}"
     end
 
-    # Find user by ID
-    def find_user(user_id, model_name = nil)
-      model_config = get_model_config(model_name)
-      model_config.model_class.find_by(id: user_id)
+    # Find a user by ID
+    def find_user(id, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      return nil unless model_config
+
+      model_config.model_class.find_by(id: id)
     end
 
-    # Find user by identifier (email/username)
-    def find_user_by_identifier(identifier, model_name = nil)
-      model_config = get_model_config(model_name)
-      model_config.model_class.send(model_config.find_method, model_config.identifier_field => identifier)
+    # Find a user by login identifier
+    def find_user_by_identifier(login_identifier, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      return nil unless model_config
+
+      model_config.find_by_identifier(login_identifier)
     end
 
-    # Update user password
-    def update_password(user, new_password)
-      model_config = @config.config_for_object(user)
-      user.send("#{model_config.password_field}=", hash_password(new_password))
-      user.save
-    end
+    # Reset password for a user
+    def reset_password(login_identifier, new_password, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      raise ConfigurationError, "Model type '#{model_type}' not found" unless model_config
 
-    # Verify password without updating
-    def verify_password(user, password)
-      model_config = @config.config_for_object(user)
-      return false unless user.respond_to?(model_config.password_field)
-      
-      stored_password = user.send(model_config.password_field)
-      return false unless stored_password.present?
-      
-      BCrypt::Password.new(stored_password) == password
+      user = model_config.find_by_identifier(login_identifier)
+      raise UserNotFoundError, "User not found" unless user
+
+      # Hash the new password
+      hashed_password = JwtPhantomAuth.utils.hash_password(new_password)
+      user.update!(model_config.password_field => hashed_password)
+
+      user
     end
 
     # Generate password reset token
-    def generate_password_reset_token(user)
-      token = SecureRandom.hex(32)
-      redis_key = "password_reset:#{user.id}"
-      
-      # Store token with 1 hour expiry
-      @config.redis_client.setex(redis_key, 3600, token)
-      
+    def generate_password_reset_token(login_identifier, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      raise ConfigurationError, "Model type '#{model_type}' not found" unless model_config
+
+      user = model_config.find_by_identifier(login_identifier)
+      raise UserNotFoundError, "User not found" unless user
+
+      token = JwtPhantomAuth.utils.generate_secure_string(32)
+      payload_identifier = model_config.get_payload_identifier(user)
+
+      # Store token in Redis with 1 hour expiry
+      redis_key = JwtPhantomAuth.utils.password_reset_key(model_type, payload_identifier)
+      JwtPhantomAuth.utils.redis_setex(@config.redis_client, redis_key, 3600, token)
+
       token
     end
 
     # Verify password reset token
-    def verify_password_reset_token(user_id, token)
-      redis_key = "password_reset:#{user_id}"
-      stored_token = @config.redis_client.get(redis_key)
-      
-      return false unless stored_token == token
-      
-      # Delete token after verification
-      @config.redis_client.del(redis_key)
+    def verify_password_reset_token(login_identifier, token, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      raise ConfigurationError, "Model type '#{model_type}' not found" unless model_config
+
+      user = model_config.find_by_identifier(login_identifier)
+      raise UserNotFoundError, "User not found" unless user
+
+      payload_identifier = model_config.get_payload_identifier(user)
+      redis_key = JwtPhantomAuth.utils.password_reset_key(model_type, payload_identifier)
+      stored_token = JwtPhantomAuth.utils.redis_get(@config.redis_client, redis_key)
+
+      return false unless stored_token && JwtPhantomAuth.utils.secure_compare(token, stored_token)
+
+      # Clear the token after successful verification
+      JwtPhantomAuth.utils.redis_delete(@config.redis_client, redis_key)
       true
     end
 
-    # Reset password using token
-    def reset_password(user_id, token, new_password)
-      return false unless verify_password_reset_token(user_id, token)
-      
-      user = find_user(user_id)
-      return false unless user
-      
-      update_password(user, new_password)
-    end
+    # Clear password reset token
+    def clear_password_reset_token(login_identifier, model_type)
+      model_config = @config.model_registry.find_model_by_type(model_type)
+      return unless model_config
 
-    # Check if user exists
-    def user_exists?(identifier)
-      find_user_by_identifier(identifier).present?
-    end
+      user = model_config.find_by_identifier(login_identifier)
+      return unless user
 
-    # Get user info for token generation
-    def get_user_info(user)
-      model_config = @config.config_for_object(user)
-      
-      # Try to use custom token payload method if available
-      if user.respond_to?(model_config.token_payload_method)
-        return user.send(model_config.token_payload_method)
-      end
-      
-      # Fallback to default payload
-      {
-        id: user.id,
-        email: user.send(model_config.identifier_field),
-        created_at: user.created_at,
-        updated_at: user.updated_at
-      }
+      payload_identifier = model_config.get_payload_identifier(user)
+      redis_key = JwtPhantomAuth.utils.password_reset_key(model_type, payload_identifier)
+      JwtPhantomAuth.utils.redis_delete(@config.redis_client, redis_key)
     end
 
     private
 
-    def get_model_config(model_name)
-      if model_name
-        @config.get_model_config(model_name)
-      else
-        @config.model_registry.default_model
-      end
-    end
+    def authenticate_password(password, user, model_config)
+      hashed_password = user.send(model_config.password_field)
 
-    def valid_password?(user, password)
-      verify_password(user, password)
-    end
-
-    def hash_password(password)
-      BCrypt::Password.create(password)
+      JwtPhantomAuth.utils.verify_password(password, hashed_password)
     end
   end
-end 
+end
